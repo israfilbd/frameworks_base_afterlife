@@ -35,6 +35,7 @@ import static android.content.Intent.FLAG_ACTIVITY_NEW_TASK;
 import static android.content.Intent.FLAG_ACTIVITY_RETAIN_IN_RECENTS;
 import static android.content.Intent.FLAG_ACTIVITY_TASK_ON_HOME;
 import static android.content.pm.ActivityInfo.FLAG_RELINQUISH_TASK_IDENTITY;
+import static android.content.pm.ActivityInfo.FLAG_RESUME_WHILE_PAUSING;
 import static android.content.pm.ActivityInfo.FLAG_SHOW_FOR_ALL_USERS;
 import static android.content.pm.ActivityInfo.RESIZE_MODE_FORCE_RESIZABLE_LANDSCAPE_ONLY;
 import static android.content.pm.ActivityInfo.RESIZE_MODE_FORCE_RESIZABLE_PORTRAIT_ONLY;
@@ -44,6 +45,7 @@ import static android.content.pm.ActivityInfo.RESIZE_MODE_RESIZEABLE;
 import static android.content.pm.ActivityInfo.RESIZE_MODE_RESIZEABLE_AND_PIPABLE_DEPRECATED;
 import static android.content.pm.ActivityInfo.RESIZE_MODE_RESIZEABLE_VIA_SDK_VERSION;
 import static android.content.pm.ActivityInfo.SCREEN_ORIENTATION_UNSET;
+
 import static android.os.Trace.TRACE_TAG_WINDOW_MANAGER;
 import static android.provider.Settings.Secure.USER_SETUP_COMPLETE;
 import static android.view.Display.DEFAULT_DISPLAY;
@@ -141,6 +143,7 @@ import android.app.IActivityController;
 import android.app.PictureInPictureParams;
 import android.app.TaskInfo;
 import android.app.WindowConfiguration;
+import android.app.servertransaction.PauseActivityItem;
 import android.content.ComponentName;
 import android.content.Intent;
 import android.content.pm.ActivityInfo;
@@ -166,6 +169,7 @@ import android.os.UserHandle;
 import android.provider.Settings;
 import android.service.voice.IVoiceInteractionSession;
 import android.util.ArraySet;
+import android.util.BoostFramework;
 import android.util.DisplayMetrics;
 import android.util.Slog;
 import android.util.proto.ProtoOutputStream;
@@ -513,6 +517,9 @@ class Task extends TaskFragment {
     private static final int TRANSLUCENT_TIMEOUT_MSG = FIRST_ACTIVITY_TASK_MSG + 1;
 
     private final Handler mHandler;
+
+    private static final ActivityPluginDelegate mActivityPluginDelegate =
+        new ActivityPluginDelegate();
 
     private class ActivityTaskHandler extends Handler {
 
@@ -1606,16 +1613,20 @@ class Task extends TaskFragment {
                 || (mDisplayContent != null && !mDisplayContent.canShowTasksInHostDeviceRecents());
     }
 
-    private void clearPinnedTaskIfNeed() {
+    private void clearPinnedTaskIfNeed(boolean isTaskRemoved) {
         // The original task is to be removed, try remove also the pinned task.
         if (mChildPipActivity != null && mChildPipActivity.getTask() != null) {
             mTaskSupervisor.removeRootTask(mChildPipActivity.getTask());
+            if (isTaskRemoved && mChildPipActivity != null
+                    && mChildPipActivity.getWindowingMode() != WINDOWING_MODE_PINNED) {
+                mChildPipActivity.clearLastParentBeforePip();
+            }
         }
     }
 
     /** Completely remove all activities associated with an existing task. */
     void removeActivities(String reason, boolean excludingTaskOverlay) {
-        clearPinnedTaskIfNeed();
+        clearPinnedTaskIfNeed(false);
         // Broken down into to cases to avoid object create due to capturing mStack.
         if (getRootTask() == null) {
             forAllActivities((r) -> {
@@ -2291,7 +2302,7 @@ class Task extends TaskFragment {
         // Apply crop to root tasks only and clear the crops of the descendant tasks.
         int width = 0;
         int height = 0;
-        if (isRootTask()) {
+        if (isRootTask() && !mTransitionController.mIsWaitingForDisplayEnabled) {
             final Rect taskBounds = getBounds();
             width = taskBounds.width();
             height = taskBounds.height();
@@ -2687,7 +2698,7 @@ class Task extends TaskFragment {
         mRemoving = true;
 
         EventLogTags.writeWmTaskRemoved(mTaskId, getRootTaskId(), getDisplayId(), reason);
-        clearPinnedTaskIfNeed();
+        clearPinnedTaskIfNeed(true);
         if (mChildPipActivity != null) {
             mChildPipActivity.clearLastParentBeforePip();
         }
@@ -3424,12 +3435,14 @@ class Task extends TaskFragment {
                 ProtoLog.d(WM_DEBUG_RECENTS_ANIMATIONS,
                         "applyAnimationUnchecked, control: %s, task: %s, transit: %s",
                         control, asTask(), AppTransition.appTransitionOldToString(transit));
-                final int size = sources != null ? sources.size() : 0;
-                control.addTaskToTargets(this, (type, anim) -> {
-                    for (int i = 0; i < size; ++i) {
-                        sources.get(i).onAnimationFinished(type, anim);
-                    }
-                });
+                final int size = (sources != null) ? sources.size() : 0;
+                if (size > 0) {
+                    control.addTaskToTargets(this, (type, anim) -> {
+                        for (int i = 0; i < size; ++i) {
+                            sources.get(i).onAnimationFinished(type, anim);
+                        }
+                    });
+                }
             }
         } else {
             super.applyAnimationUnchecked(lp, enter, transit, isVoiceInteraction, sources);
@@ -5182,13 +5195,11 @@ class Task extends TaskFragment {
             // Not ready yet!
             return false;
         }
-
         final ActivityRecord topActivity = topRunningActivity(true /* focusableOnly */);
         if (topActivity == null) {
             // There are no activities left in this task, let's look somewhere else.
             return resumeNextFocusableActivityWhenRootTaskIsEmpty(prev, options);
         }
-
         final boolean[] resumed = new boolean[1];
         final TaskFragment topFragment = topActivity.getTaskFragment();
         resumed[0] = topFragment.resumeTopActivity(prev, options, deferPause);
@@ -5269,6 +5280,10 @@ class Task extends TaskFragment {
         ProtoLog.i(WM_DEBUG_ADD_REMOVE, "Adding activity %s to task %s "
                         + "callers: %s", r, task, new RuntimeException("here").fillInStackTrace());
 
+        if (mActivityPluginDelegate != null) {
+            mActivityPluginDelegate.activityInvokeNotification
+                (r.info.packageName, getWindowingMode() == WINDOWING_MODE_FULLSCREEN);
+        }
         if (isActivityTypeHomeOrRecents() && getActivityBelow(r) == null) {
             // If this is the first activity, don't do any fancy animations,
             // because there is nothing for it to animate on top of.
@@ -6271,6 +6286,13 @@ class Task extends TaskFragment {
 
     AnimatingActivityRegistry getAnimatingActivityRegistry() {
         return mAnimatingActivityRegistry;
+    }
+
+    public void onARStopTriggered(ActivityRecord r) {
+        if (mActivityPluginDelegate != null && getWindowingMode() != WINDOWING_MODE_UNDEFINED) {
+                            mActivityPluginDelegate.activitySuspendNotification
+                                (r.info.applicationInfo.packageName, getWindowingMode() == WINDOWING_MODE_FULLSCREEN, false);
+                        }
     }
 
     @Override

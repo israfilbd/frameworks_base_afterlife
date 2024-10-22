@@ -1416,7 +1416,7 @@ public class ContentProviderHelper {
                                     }
                                 }
                             }
-                        } catch (RemoteException ignored) {
+                        } catch (RemoteException|SecurityException ignored) {
                         }
                     });
                 }
@@ -1799,6 +1799,10 @@ public class ContentProviderHelper {
                 if (mProviderMap.getProviderByName(names[j], userId) == cpr) {
                     mProviderMap.removeProviderByName(names[j], userId);
                 }
+            }
+            // remove publish map if provider is dying
+            if (cpr.proc != null) {
+                cpr.proc.mProviders.removeProvider(cpr.info.name);
             }
         }
 

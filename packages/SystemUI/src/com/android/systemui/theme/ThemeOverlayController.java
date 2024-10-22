@@ -456,8 +456,8 @@ public class ThemeOverlayController implements CoreStartable, Dumpable, TunerSer
             UiModeManager uiModeManager,
             SystemSettings systemSettings,
             ConfigurationController configurationController,
-            TunerService tunerService,
-            ActivityManager activityManager) {
+            ActivityManager activityManager,
+            TunerService tunerService) {
         mContext = context;
         mIsMonetEnabled = featureFlags.isEnabled(Flags.MONET);
         mIsFidelityEnabled = featureFlags.isEnabled(Flags.COLOR_FIDELITY);
@@ -478,8 +478,8 @@ public class ThemeOverlayController implements CoreStartable, Dumpable, TunerSer
         mJavaAdapter = javaAdapter;
         mKeyguardTransitionInteractor = keyguardTransitionInteractor;
         mUiModeManager = uiModeManager;
-        mTunerService = tunerService;
         mActivityManager = activityManager;
+        mTunerService = tunerService;
         dumpManager.registerDumpable(TAG, this);
         mThemeController = new AfterlifeThemeController(mContext, mBgHandler);
     }
@@ -534,11 +534,6 @@ public class ThemeOverlayController implements CoreStartable, Dumpable, TunerSer
                         if (!mDeviceProvisionedController.isUserSetup(userId)) {
                             Log.i(TAG, "Theme application deferred when setting changed.");
                             mDeferredThemeEvaluation = true;
-                            return;
-                        }
-                        if (mSkipSettingChange) {
-                            if (DEBUG) Log.d(TAG, "Skipping setting change");
-                            mSkipSettingChange = false;
                             return;
                         }
                         reevaluateSystemTheme(true /* forceReload */);
@@ -953,12 +948,6 @@ public class ThemeOverlayController implements CoreStartable, Dumpable, TunerSer
                     mActivityManager.setThemeOverlayReady(currentUser);
                 };
 
-        if (colorSchemeIsApplied(managedProfiles)) {
-            Log.d(TAG, "Skipping overlay creation. Theme was already: " + mColorScheme);
-            onCompleteCallback.run();
-            return;
-        }
-
         if (DEBUG) {
             Log.d(TAG, "Applying overlays: " + categoryToPackage.keySet().stream()
                     .map(key -> key + " -> " + categoryToPackage.get(key)).collect(
@@ -992,8 +981,7 @@ public class ThemeOverlayController implements CoreStartable, Dumpable, TunerSer
         // used as a system-wide theme.
         // - Content intentionally excluded, intended for media player, not system-wide
         List<Style> validStyles = new ArrayList<>(Arrays.asList(Style.EXPRESSIVE, Style.SPRITZ,
-                Style.TONAL_SPOT, Style.FRUIT_SALAD, Style.RAINBOW, Style.VIBRANT,
-                Style.MONOCHROMATIC));
+                Style.TONAL_SPOT, Style.FRUIT_SALAD, Style.RAINBOW, Style.VIBRANT));
 
         Style style = mThemeStyle;
         final String overlayPackageJson = mSecureSettings.getStringForUser(

@@ -23,14 +23,15 @@ import com.android.systemui.qs.tiles.CaffeineTile
 import com.android.systemui.qs.tiles.CellularTile
 import com.android.systemui.qs.tiles.CompassTile
 import com.android.systemui.qs.tiles.DataSwitchTile
+import com.android.systemui.qs.tiles.FPSInfoTile
 import com.android.systemui.qs.tiles.HeadsUpTile
 import com.android.systemui.qs.tiles.PowerShareTile
-import com.android.systemui.qs.tiles.SoundEngineTile
 import com.android.systemui.qs.tiles.SoundTile
 import com.android.systemui.qs.tiles.SoundSearchTile
 import com.android.systemui.qs.tiles.SyncTile
 import com.android.systemui.qs.tiles.UsbTetherTile
 import com.android.systemui.qs.tiles.VPNTetheringTile
+import com.android.systemui.qs.tiles.VolumeTile
 import com.android.systemui.qs.tiles.VpnTile
 import com.android.systemui.qs.tiles.WeatherTile
 import com.android.systemui.qs.tiles.WifiTile
@@ -78,6 +79,12 @@ interface AfterlifeModule {
     @StringKey(DataSwitchTile.TILE_SPEC)
     fun bindDataSwitchTile(dataSwitchTile: DataSwitchTile): QSTileImpl<*>
 
+    /** Inject FPSInfoTile into tileMap in QSModule */
+    @Binds
+    @IntoMap
+    @StringKey(FPSInfoTile.TILE_SPEC)
+    fun FPSInfoTile(fpsInfoTile: FPSInfoTile): QSTileImpl<*>
+
     /** Inject HeadsUpTile into tileMap in QSModule */
     @Binds
     @IntoMap
@@ -95,12 +102,6 @@ interface AfterlifeModule {
     @IntoMap
     @StringKey(SoundTile.TILE_SPEC)
     fun bindSoundTile(soundTile: SoundTile): QSTileImpl<*>
-
-    /** Inject SoundEngineTile into tileMap in QSModule */
-    @Binds
-    @IntoMap
-    @StringKey(SoundEngineTile.TILE_SPEC)
-    fun bindSoundEngineTile(soundEngineTile: SoundEngineTile): QSTileImpl<*>
 
     /** Inject SoundSearchTile into tileMap in QSModule */
     @Binds
@@ -125,6 +126,12 @@ interface AfterlifeModule {
     @IntoMap
     @StringKey(VPNTetheringTile.TILE_SPEC)
     fun bindVPNTetheringTile(vpnTetheringTile: VPNTetheringTile): QSTileImpl<*>
+
+    /** Inject VolumeTile into tileMap in QSModule */
+    @Binds
+    @IntoMap
+    @StringKey(VolumeTile.TILE_SPEC)
+    fun bindVolumeTile(volumeTile: VolumeTile): QSTileImpl<*>
 
     /** Inject VpnTile into tileMap in QSModule */
     @Binds

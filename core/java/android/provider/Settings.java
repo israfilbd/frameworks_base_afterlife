@@ -6733,6 +6733,30 @@ public final class Settings {
         public static final String QS_SHOW_DATA_USAGE = "qs_show_data_usage";
 
         /**
+         * Change quick settings tiles animation style
+         * @hide
+         */
+        public static final String QS_TILE_ANIMATION_STYLE = "qs_tile_animation_style";
+
+        /**
+         * Change quick settings tiles animation duration
+         * @hide
+         */
+        public static final String QS_TILE_ANIMATION_DURATION = "qs_tile_animation_duration";
+
+        /**
+         * Change quick settings tiles interpolator
+         * @hide
+         */
+        public static final String QS_TILE_ANIMATION_INTERPOLATOR = "qs_tile_animation_interpolator";
+
+        /**
+         * Double tap on lockscreen to sleep
+         * @hide
+         */
+        public static final String DOUBLE_TAP_SLEEP_LOCKSCREEN = "double_tap_sleep_lockscreen";
+
+        /**
          * Keys we no longer back up under the current schema, but want to continue to
          * process when restoring historical backup datasets.
          *
@@ -12795,6 +12819,12 @@ public final class Settings {
          * @hide
          */
         public static final String BACK_GESTURE_ARROW = "back_gesture_arrow";
+
+        /**
+         * Control whether the process FPS info meter should be shown.
+         * @hide
+         */
+        public static final String SHOW_FPS_OVERLAY = "show_fps_overlay";
 
         /**
          * Keys we no longer back up under the current schema, but want to continue to

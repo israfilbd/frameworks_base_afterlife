@@ -16,8 +16,10 @@
 
 package com.android.server.wm;
 
+import static android.app.WindowConfiguration.ACTIVITY_TYPE_RECENTS;
 import static android.app.WindowConfiguration.WINDOWING_MODE_FREEFORM;
 import static android.inputmethodservice.InputMethodService.ENABLE_HIDE_IME_CAPTION_BAR;
+import static android.view.Display.INVALID_DISPLAY;
 import static android.view.Display.TYPE_INTERNAL;
 import static android.view.InsetsFrameProvider.SOURCE_ARBITRARY_RECTANGLE;
 import static android.view.InsetsFrameProvider.SOURCE_CONTAINER_BOUNDS;
@@ -84,11 +86,13 @@ import android.annotation.NonNull;
 import android.annotation.Nullable;
 import android.annotation.Px;
 import android.app.ActivityManager;
+import android.app.ActivityTaskManager;
 import android.app.ActivityThread;
 import android.app.LoadedApk;
 import android.app.ResourcesManager;
 import android.content.Context;
 import android.content.Intent;
+import android.content.pm.ApplicationInfo;
 import android.content.res.Resources;
 import android.graphics.Insets;
 import android.graphics.PixelFormat;
@@ -104,6 +108,8 @@ import android.os.SystemClock;
 import android.os.SystemProperties;
 import android.os.Trace;
 import android.os.UserHandle;
+import android.util.BoostFramework;
+import android.provider.Settings;
 import android.util.ArraySet;
 import android.util.Slog;
 import android.util.SparseArray;
@@ -123,6 +129,7 @@ import android.view.WindowManager;
 import android.view.WindowManager.LayoutParams;
 import android.view.WindowManagerGlobal;
 import android.view.accessibility.AccessibilityManager;
+import android.widget.Toast;
 import android.window.ClientWindowFrames;
 
 import com.android.internal.R;
@@ -198,6 +205,19 @@ public class DisplayPolicy {
     private final AccessibilityManager mAccessibilityManager;
     private final ImmersiveModeConfirmation mImmersiveModeConfirmation;
     private final ScreenshotHelper mScreenshotHelper;
+
+    private static boolean SCROLL_BOOST_SS_ENABLE = false;
+    private static boolean SILKY_SCROLLS_ENABLE = false;
+    private static boolean isLowRAM = false;
+
+    /*
+     * @hide
+     */
+    BoostFramework mPerfBoostDrag = null;
+    BoostFramework mPerfBoostFling = null;
+    BoostFramework mPerfBoostPrefling = null;
+    BoostFramework mPerf = new BoostFramework();
+    private boolean mIsPerfBoostFlingAcquired;
 
     private final Object mServiceAcquireLock = new Object();
     private long mPanicTime;
@@ -378,6 +398,9 @@ public class DisplayPolicy {
     private final ForceShowNavBarSettingsObserver mForceShowNavBarSettingsObserver;
     private boolean mForceShowNavigationBarEnabled;
 
+    private long mLastInteraction = 0;
+    private long mLastUnlock = 0;
+
     private class PolicyHandler extends Handler {
 
         PolicyHandler(Looper looper) {
@@ -395,6 +418,38 @@ public class DisplayPolicy {
                     break;
             }
         }
+    }
+
+    private String getAppPackageName() {
+        String currentPackage;
+        try {
+            ActivityManager.RunningTaskInfo rti = ActivityTaskManager.getService().getTasks(
+                1, false /* filterVisibleRecents */, false /*keepIntentExtra */, INVALID_DISPLAY /*don't filter display */).get(0);
+            currentPackage = rti.topActivity.getPackageName();
+        } catch (Exception e) {
+            currentPackage = null;
+        }
+        return currentPackage;
+    }
+
+    private boolean isTopAppGame(String currentPackage, BoostFramework BoostType) {
+        boolean isGame = false;
+        if (isLowRAM) {
+            try {
+                ApplicationInfo ai = mContext.getPackageManager().getApplicationInfo(currentPackage, 0);
+                if(ai != null) {
+                    isGame = (ai.category == ApplicationInfo.CATEGORY_GAME) ||
+                            ((ai.flags & ApplicationInfo.FLAG_IS_GAME) ==
+                                ApplicationInfo.FLAG_IS_GAME);
+                }
+            } catch (Exception e) {
+                return false;
+            }
+        } else {
+            isGame = (BoostType.perfGetFeedback(BoostFramework.VENDOR_FEEDBACK_WORKLOAD_TYPE,
+                      currentPackage) == BoostFramework.WorkloadType.GAME);
+        }
+        return isGame;
     }
 
     DisplayPolicy(WindowManagerService service, DisplayContent displayContent) {
@@ -425,6 +480,12 @@ public class DisplayPolicy {
             mScreenOnEarly = true;
             mScreenOnFully = true;
         }
+
+        if (mPerf != null) {
+            SCROLL_BOOST_SS_ENABLE = Boolean.parseBoolean(mPerf.perfGetProp("vendor.perf.gestureflingboost.enable", "true"));
+            SILKY_SCROLLS_ENABLE = Boolean.parseBoolean(mPerf.perfGetProp("ro.vendor.perf.ss", "false"));
+        }
+        isLowRAM = SystemProperties.getBoolean("ro.config.low_ram", false);
 
         final Looper looper = UiThread.getHandler().getLooper();
         mHandler = new PolicyHandler(looper);
@@ -512,14 +573,6 @@ public class DisplayPolicy {
                 }
 
                 @Override
-                public void onScroll() {
-                    if (mService.mPowerManagerInternal != null) {
-                        mService.mPowerManagerInternal.setPowerBoost(
-                             Boost.DISPLAY_UPDATE_IMMINENT, 500);
-                    }
-                }
-
-                @Override
                 public void onDebug() {
                     // no-op
                 }
@@ -536,6 +589,100 @@ public class DisplayPolicy {
                         listener.onTouchStart();
                     }
                 }
+
+                    @Override
+                    public void onVerticalFling(int duration) {
+                        String currentPackage = getAppPackageName();
+                        if (currentPackage == null) {
+                            Slog.e(TAG, "Error: package name null");
+                            return;
+                        }
+                        if (SCROLL_BOOST_SS_ENABLE) {
+                            if (mPerfBoostFling == null) {
+                                mPerfBoostFling = new BoostFramework();
+                                mIsPerfBoostFlingAcquired = false;
+                            }
+                            if (mPerfBoostFling == null) {
+                                Slog.e(TAG, "Error: boost object null");
+                                return;
+                            }
+                            boolean isGame = isTopAppGame(currentPackage, mPerfBoostFling);
+                            if (!isGame) {
+                                mPerfBoostFling.perfHint(BoostFramework.VENDOR_HINT_SCROLL_BOOST,
+                                    currentPackage, duration + 160, BoostFramework.Scroll.VERTICAL);
+                                mIsPerfBoostFlingAcquired = true;
+                           }
+                        }
+                    }
+
+                    @Override
+                    public void onHorizontalFling(int duration) {
+                        String currentPackage = getAppPackageName();
+                        if (currentPackage == null) {
+                            Slog.e(TAG, "Error: package name null");
+                            return;
+                        }
+                        if (SCROLL_BOOST_SS_ENABLE) {
+                            if (mPerfBoostFling == null) {
+                                mPerfBoostFling = new BoostFramework();
+                                mIsPerfBoostFlingAcquired = false;
+                            }
+                            if (mPerfBoostFling == null) {
+                                Slog.e(TAG, "Error: boost object null");
+                                return;
+                            }
+                            boolean isGame = isTopAppGame(currentPackage, mPerfBoostFling);
+                            if (!isGame) {
+                                mPerfBoostFling.perfHint(BoostFramework.VENDOR_HINT_SCROLL_BOOST,
+                                    currentPackage, duration + 160, BoostFramework.Scroll.HORIZONTAL);
+                                mIsPerfBoostFlingAcquired = true;
+                            }
+                        }
+                    }
+
+                    @Override
+                    public void onScroll(boolean started) {
+                        String currentPackage = getAppPackageName();
+                        if (currentPackage == null) {
+                            Slog.e(TAG, "Error: package name null");
+                            return;
+                        }
+                        boolean isGame;
+                        if (mPerfBoostDrag == null) {
+                            mPerfBoostDrag = new BoostFramework();
+                        }
+                        if (mPerfBoostDrag == null) {
+                            Slog.e(TAG, "Error: boost object null");
+                            return;
+                        }
+                        if (SCROLL_BOOST_SS_ENABLE && started) {
+                            if (mPerfBoostPrefling == null) {
+                                mPerfBoostPrefling = new BoostFramework();
+                            }
+                            if (mPerfBoostPrefling == null) {
+                                Slog.e(TAG, "Error: boost object null");
+                                return;
+                            }
+                            isGame = isTopAppGame(currentPackage, mPerfBoostPrefling);
+                            if (!isGame) {
+                                mPerfBoostPrefling.perfHint(BoostFramework.VENDOR_HINT_SCROLL_BOOST,
+                                        currentPackage, -1, BoostFramework.Scroll.PREFILING);
+                            }
+                        }
+                        isGame = isTopAppGame(currentPackage, mPerfBoostDrag);
+                        if (!isGame && started) {
+                            if (SILKY_SCROLLS_ENABLE) {
+                                mPerfBoostDrag.perfEvent(BoostFramework.VENDOR_HINT_DRAG_START, currentPackage);
+                            }
+                            mPerfBoostDrag.perfHint(BoostFramework.VENDOR_HINT_DRAG_BOOST,
+                                            currentPackage, -1, 1);
+                        } else {
+                            if (SILKY_SCROLLS_ENABLE){
+                                mPerfBoostDrag.perfEvent(BoostFramework.VENDOR_HINT_DRAG_END, currentPackage);
+                            }
+                            mPerfBoostDrag.perfLockRelease();
+                        }
+                    }
 
                 @Override
                 public void onUpOrCancel() {
@@ -2203,6 +2350,7 @@ public class DisplayPolicy {
                     + "request");
             return;
         }
+
         final InsetsSourceProvider provider = swipeTarget.getControllableInsetProvider();
         final InsetsControlTarget controlTarget = provider != null
                 ? provider.getControlTarget() : null;
@@ -2236,6 +2384,12 @@ public class DisplayPolicy {
 
         if (controlTarget.canShowTransient()) {
             // Show transient bars if they are hidden; restore position if they are visible.
+            if (isTransientBarsLocked(swipeTarget != mStatusBar)) {
+                // prevent gestures from showing transient bars unless user swipes statusbar area
+                Toast.makeText(mContext, com.android.internal.R.string.immersive_ui_mode_notify_locked, Toast.LENGTH_SHORT).show();
+                Slog.d("ImmersiveUiMode", "Immersive UI mode active ignoring system bar visibility requests");
+                return;
+            }
             mDisplayContent.getInsetsPolicy().showTransient(SHOW_TYPES_FOR_SWIPE,
                     isGestureOnSystemBar, swipeTarget == mStatusBar);
             controlTarget.showInsets(restorePositionTypes, false /* fromIme */,
@@ -2259,6 +2413,32 @@ public class DisplayPolicy {
         } else {
             mImmersiveModeConfirmation.confirmCurrentPrompt();
         }
+    }
+
+    boolean isTransientBarsLocked(boolean update) {
+        boolean isImmersiveSysUi = Settings.Secure.getInt(mContext.getContentResolver(),
+                "lock_immersive_sysui", 0) == 1;
+        final long now = SystemClock.uptimeMillis();
+        final long timeSinceLastUnlock = now - mLastUnlock;
+        final long timeSinceLastInteraction = now - mLastInteraction;
+        if (!isImmersiveSysUi) {
+            return false;
+        }
+        if (!update) {
+            return false;
+        }
+        if (timeSinceLastUnlock <= 3500) {
+            mLastUnlock = now;
+            return false;
+        }
+        if (timeSinceLastInteraction > 2500) {
+            if (update) {
+                mLastInteraction = now;
+            }
+            return true;
+        }
+        mLastUnlock = now;
+        return false;
     }
 
     boolean isKeyguardShowing() {

@@ -56,9 +56,6 @@ import static android.os.InputConstants.DEFAULT_DISPATCHING_TIMEOUT_MILLIS;
 import static android.os.Process.FIRST_APPLICATION_UID;
 import static android.os.Process.SYSTEM_UID;
 import static android.os.Trace.TRACE_TAG_WINDOW_MANAGER;
-import static android.provider.Settings.Global.DEVELOPMENT_ENABLE_FREEFORM_WINDOWS_SUPPORT;
-import static android.provider.Settings.Global.DEVELOPMENT_ENABLE_NON_RESIZABLE_MULTI_WINDOW;
-import static android.provider.Settings.Global.DEVELOPMENT_FORCE_RESIZABLE_ACTIVITIES;
 import static android.provider.Settings.Global.DEVELOPMENT_FORCE_RTL;
 import static android.provider.Settings.Global.HIDE_ERROR_DIALOGS;
 import static android.provider.Settings.System.FONT_SCALE;
@@ -286,6 +283,7 @@ import com.android.server.sdksandbox.SdkSandboxManagerLocal;
 import com.android.server.statusbar.StatusBarManagerInternal;
 import com.android.server.uri.NeededUriGrants;
 import com.android.server.uri.UriGrantsManagerInternal;
+import com.android.server.usage.AppStandbyInternal;
 import com.android.server.wallpaper.WallpaperManagerInternal;
 import com.android.wm.shell.Flags;
 import com.android.internal.util.custom.cutout.CutoutFullscreenController;
@@ -403,7 +401,7 @@ public class ActivityTaskManagerService extends IActivityTaskManager.Stub {
      * @see WindowManagerThreadPriorityBooster
      */
     final Object mGlobalLockWithoutBoost = mGlobalLock;
-    ActivityTaskSupervisor mTaskSupervisor;
+    public ActivityTaskSupervisor mTaskSupervisor;
     ActivityClientController mActivityClientController;
     RootWindowContainer mRootWindowContainer;
     WindowManagerService mWindowManager;
@@ -808,6 +806,8 @@ public class ActivityTaskManagerService extends IActivityTaskManager.Stub {
 
     private CutoutFullscreenController mCutoutFullscreenController;
 
+    public AppStandbyInternal mAppStandbyInternal;
+
     private final class SettingObserver extends ContentObserver {
         private final Uri mFontScaleUri = Settings.System.getUriFor(FONT_SCALE);
         private final Uri mHideErrorDialogsUri = Settings.Global.getUriFor(HIDE_ERROR_DIALOGS);
@@ -893,6 +893,7 @@ public class ActivityTaskManagerService extends IActivityTaskManager.Stub {
             mGrammaticalManagerInternal = LocalServices.getService(
                     GrammaticalInflectionManagerInternal.class);
         }
+        mAppStandbyInternal = LocalServices.getService(AppStandbyInternal.class);
     }
 
     public void onInitPowerManagement() {
@@ -914,9 +915,7 @@ public class ActivityTaskManagerService extends IActivityTaskManager.Stub {
 
     public void retrieveSettings(ContentResolver resolver) {
         final boolean freeformWindowManagement =
-                mContext.getPackageManager().hasSystemFeature(FEATURE_FREEFORM_WINDOW_MANAGEMENT)
-                        || Settings.Global.getInt(
-                        resolver, DEVELOPMENT_ENABLE_FREEFORM_WINDOWS_SUPPORT, 1) != 0;
+                mContext.getPackageManager().hasSystemFeature(FEATURE_FREEFORM_WINDOW_MANAGEMENT);
 
         final boolean supportsMultiWindow = ActivityTaskManager.supportsMultiWindow(mContext);
         final boolean supportsPictureInPicture = supportsMultiWindow &&
@@ -929,10 +928,8 @@ public class ActivityTaskManagerService extends IActivityTaskManager.Stub {
         final boolean supportsMultiDisplay = mContext.getPackageManager()
                 .hasSystemFeature(FEATURE_ACTIVITIES_ON_SECONDARY_DISPLAYS);
         final boolean forceRtl = Settings.Global.getInt(resolver, DEVELOPMENT_FORCE_RTL, 0) != 0;
-        final boolean forceResizable = Settings.Global.getInt(
-                resolver, DEVELOPMENT_FORCE_RESIZABLE_ACTIVITIES, 1) != 0;
-        final boolean devEnableNonResizableMultiWindow = Settings.Global.getInt(
-                resolver, DEVELOPMENT_ENABLE_NON_RESIZABLE_MULTI_WINDOW, 1) != 0;
+        final boolean forceResizable = true;
+        final boolean devEnableNonResizableMultiWindow = true;
         final int supportsNonResizableMultiWindow = mContext.getResources().getInteger(
                 com.android.internal.R.integer.config_supportsNonResizableMultiWindow);
         final int respectsActivityMinWidthHeightMultiWindow = mContext.getResources().getInteger(

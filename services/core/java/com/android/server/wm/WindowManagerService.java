@@ -235,6 +235,7 @@ import android.sysprop.SurfaceFlingerProperties;
 import android.text.format.DateUtils;
 import android.util.ArrayMap;
 import android.util.ArraySet;
+import android.util.BoostFramework;
 import android.util.DisplayMetrics;
 import android.util.EventLog;
 import android.util.MergedConfiguration;
@@ -391,6 +392,8 @@ public class WindowManagerService extends IWindowManager.Stub
     static final int LAYOUT_REPEAT_THRESHOLD = 4;
 
     static final boolean PROFILE_ORIENTATION = false;
+    static WindowState mFocusingWindow;
+    String mFocusingActivity;
 
     /** The maximum length we will accept for a loaded animation duration:
      * this is 10 seconds.
@@ -473,6 +476,8 @@ public class WindowManagerService extends IWindowManager.Stub
     final TransitionTracer mTransitionTracer;
 
     private final DisplayAreaPolicy.Provider mDisplayAreaPolicyProvider;
+
+    private BoostFramework mPerf = null;
 
     final private KeyguardDisableHandler mKeyguardDisableHandler;
 
@@ -3511,12 +3516,28 @@ public class WindowManagerService extends IWindowManager.Stub
         ValueAnimator.setDurationScale(scale);
     }
 
+    private float animationScalesCheck (int which) {
+        float value = -1.0f;
+        if (!mAnimationsDisabled) {
+            if (value == -1.0f) {
+                switch (which) {
+                    case WINDOW_ANIMATION_SCALE: value = mWindowAnimationScaleSetting; break;
+                    case TRANSITION_ANIMATION_SCALE: value = mTransitionAnimationScaleSetting; break;
+                    case ANIMATION_DURATION_SCALE: value = mAnimatorDurationScaleSetting; break;
+                }
+            }
+        } else {
+            value = 0;
+        }
+        return value;
+    }
+
     public float getWindowAnimationScaleLocked() {
-        return mAnimationsDisabled ? 0 : mWindowAnimationScaleSetting;
+        return animationScalesCheck(WINDOW_ANIMATION_SCALE);
     }
 
     public float getTransitionAnimationScaleLocked() {
-        return mAnimationsDisabled ? 0 : mTransitionAnimationScaleSetting;
+        return animationScalesCheck(TRANSITION_ANIMATION_SCALE);
     }
 
     @Override
@@ -5585,8 +5606,9 @@ public class WindowManagerService extends IWindowManager.Stub
                     synchronized (mGlobalLock) {
                         ProtoLog.w(WM_ERROR, "App freeze timeout expired.");
                         mWindowsFreezingScreen = WINDOWS_FREEZING_SCREENS_TIMEOUT;
-                        for (int i = mAppFreezeListeners.size() - 1; i >= 0; --i) {
-                            mAppFreezeListeners.get(i).onAppFreezeTimeout();
+                        List<AppFreezeListener> listenersCopy = new ArrayList<>(mAppFreezeListeners);
+                        for (int i = listenersCopy.size() - 1; i >= 0; --i) {
+                            listenersCopy.get(i).onAppFreezeTimeout();
                         }
                     }
                     break;
@@ -6323,6 +6345,12 @@ public class WindowManagerService extends IWindowManager.Stub
         }
 
         mLatencyTracker.onActionStart(ACTION_ROTATE_SCREEN);
+        if (mPerf == null) {
+            mPerf = new BoostFramework();
+        }
+        if (mPerf != null) {
+            mPerf.perfHint(BoostFramework.VENDOR_HINT_ROTATION_LATENCY_BOOST, null);
+        }
         mExitAnimId = exitAnim;
         mEnterAnimId = enterAnim;
 
@@ -6444,6 +6472,9 @@ public class WindowManagerService extends IWindowManager.Stub
         }
         mAtmService.endPowerMode(POWER_MODE_REASON_CHANGE_DISPLAY);
         mLatencyTracker.onActionEnd(ACTION_ROTATE_SCREEN);
+        if (mPerf != null) {
+            mPerf.perfLockRelease();
+        }
     }
 
     static int getPropertyInt(String[] tokens, int index, int defUnits, int defDps,
@@ -7990,8 +8021,11 @@ public class WindowManagerService extends IWindowManager.Stub
         @Override
         public void waitForAllWindowsDrawn(Message message, long timeout, int displayId) {
             Objects.requireNonNull(message.getTarget());
-            final WindowContainer<?> container = displayId == INVALID_DISPLAY
+            final WindowContainer<?> container;
+            synchronized (mGlobalLock) {
+                container = displayId == INVALID_DISPLAY
                     ? mRoot : mRoot.getDisplayContent(displayId);
+            }
             if (container == null) {
                 // The waiting container doesn't exist, no need to wait to run the callback. Run and
                 // return;
@@ -9688,6 +9722,7 @@ public class WindowManagerService extends IWindowManager.Stub
 
     boolean shouldRestoreImeVisibility(IBinder imeTargetWindowToken) {
         final Task imeTargetWindowTask;
+        boolean wasLastShown = false;
         synchronized (mGlobalLock) {
             final WindowState imeTargetWindow = mWindowMap.get(imeTargetWindowToken);
             if (imeTargetWindow == null) {
@@ -9699,13 +9734,13 @@ public class WindowManagerService extends IWindowManager.Stub
             }
             if (imeTargetWindow.mActivityRecord != null
                     && imeTargetWindow.mActivityRecord.mLastImeShown) {
-                return true;
+                wasLastShown = true;
             }
         }
         final TaskSnapshot snapshot = getTaskSnapshot(imeTargetWindowTask.mTaskId,
                 imeTargetWindowTask.mUserId, false /* isLowResolution */,
                 false /* restoreFromDisk */);
-        return snapshot != null && snapshot.hasImeSurface();
+        return snapshot != null && (snapshot.hasImeSurface() || wasLastShown);
     }
 
     @Override

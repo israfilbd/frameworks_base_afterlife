@@ -47,6 +47,7 @@ import static android.view.WindowManager.TRANSIT_NONE;
 import static android.view.WindowManager.TRANSIT_OPEN;
 
 import static com.android.internal.protolog.ProtoLogGroup.WM_DEBUG_STATES;
+import static com.android.server.wm.ActivityRecord.State.DESTROYED;
 import static com.android.server.wm.ActivityRecord.State.PAUSED;
 import static com.android.server.wm.ActivityRecord.State.PAUSING;
 import static com.android.server.wm.ActivityRecord.State.RESUMED;
@@ -93,6 +94,7 @@ import android.hardware.power.Boost;
 import android.os.IBinder;
 import android.os.PowerManagerInternal;
 import android.os.UserHandle;
+import android.util.BoostFramework;
 import android.util.DisplayMetrics;
 import android.util.Slog;
 import android.util.proto.ProtoOutputStream;
@@ -105,6 +107,7 @@ import android.window.TaskFragmentInfo;
 import android.window.TaskFragmentOrganizerToken;
 
 import com.android.internal.annotations.VisibleForTesting;
+import com.android.internal.app.ActivityTrigger;
 import com.android.internal.protolog.common.ProtoLog;
 import com.android.internal.util.ToBooleanFunction;
 import com.android.server.LocalServices;
@@ -202,6 +205,10 @@ class TaskFragment extends WindowContainer<WindowContainer> {
     final ActivityTaskSupervisor mTaskSupervisor;
     final RootWindowContainer mRootWindowContainer;
     private final TaskFragmentOrganizerController mTaskFragmentOrganizerController;
+
+    public BoostFramework mPerf = null;
+    //ActivityTrigger
+    static final ActivityTrigger mActivityTrigger = new ActivityTrigger();
 
     // TODO(b/233177466): Move mMinWidth and mMinHeight to Task and remove usages in TaskFragment
     /**
@@ -1325,10 +1332,13 @@ class TaskFragment extends WindowContainer<WindowContainer> {
 
             // In a multi-resumed environment, like in a freeform device, the top
             // activity can be resumed, but it might not be the focused app.
-            // Set focused app when top activity is resumed
-            if (taskDisplayArea.inMultiWindowMode() && taskDisplayArea.mDisplayContent != null
-                    && taskDisplayArea.mDisplayContent.mFocusedApp != next) {
-                taskDisplayArea.mDisplayContent.setFocusedApp(next);
+            // Set focused app when top activity is resumed. However, we shouldn't do it for a
+            // same task because it can break focused state. (e.g. activity embedding)
+            if (taskDisplayArea.inMultiWindowMode() && taskDisplayArea.mDisplayContent != null) {
+                final ActivityRecord focusedApp = taskDisplayArea.mDisplayContent.mFocusedApp;
+                if (focusedApp == null || focusedApp.getTask() != next.getTask()) {
+                    taskDisplayArea.mDisplayContent.setFocusedApp(next);
+                }
             }
             ProtoLog.d(WM_DEBUG_STATES, "resumeTopActivity: Top activity "
                     + "resumed %s", next);
@@ -1360,6 +1370,13 @@ class TaskFragment extends WindowContainer<WindowContainer> {
         mTaskSupervisor.mStoppingActivities.remove(next);
 
         if (DEBUG_SWITCH) Slog.v(TAG_SWITCH, "Resuming " + next);
+
+        //Trigger Activity Resume
+        if (mActivityTrigger != null) {
+            mActivityTrigger.activityResumeTrigger(next.intent, next.info,
+                                                   next.info.applicationInfo,
+                                                   next.occludesParent());
+        }
 
         mTaskSupervisor.setLaunchSource(next.info.applicationInfo.uid);
 
@@ -1399,7 +1416,13 @@ class TaskFragment extends WindowContainer<WindowContainer> {
                                 : HostingRecord.HOSTING_TYPE_NEXT_ACTIVITY);
             }
             if (lastResumed != null) {
-                lastResumed.setWillCloseOrEnterPip(true);
+                int state = lastResumed.getState().ordinal();
+                if (lastResumed.inFreeformWindowingMode()
+                        && !(state >= PAUSING.ordinal() && state <= DESTROYED.ordinal())) {
+                    // do nothing
+                } else {
+                    lastResumed.setWillCloseOrEnterPip(true);
+                }
             }
             return true;
         } else if (mResumedActivity == next && next.isState(RESUMED)
@@ -1461,6 +1484,11 @@ class TaskFragment extends WindowContainer<WindowContainer> {
         // to ignore it when computing the desired screen orientation.
         boolean anim = true;
         final DisplayContent dc = taskDisplayArea.mDisplayContent;
+
+        if (mPerf == null) {
+            mPerf = new BoostFramework();
+        }
+
         if (prev != null) {
             if (prev.finishing) {
                 if (DEBUG_TRANSITION) {
@@ -1470,6 +1498,10 @@ class TaskFragment extends WindowContainer<WindowContainer> {
                     anim = false;
                     dc.prepareAppTransition(TRANSIT_NONE);
                 } else {
+                    if(prev.getTask() != next.getTask() && mPerf != null) {
+                       mPerf.perfHint(BoostFramework.VENDOR_HINT_ANIM_BOOST,
+                           next.packageName);
+                    }
                     dc.prepareAppTransition(TRANSIT_CLOSE);
                 }
                 prev.setVisibility(false);
@@ -1481,6 +1513,10 @@ class TaskFragment extends WindowContainer<WindowContainer> {
                     anim = false;
                     dc.prepareAppTransition(TRANSIT_NONE);
                 } else {
+                    if(prev.getTask() != next.getTask() && mPerf != null) {
+                       mPerf.perfHint(BoostFramework.VENDOR_HINT_ANIM_BOOST,
+                           next.packageName);
+                    }
                     dc.prepareAppTransition(TRANSIT_OPEN,
                             next.mLaunchTaskBehind ? TRANSIT_FLAG_OPEN_BEHIND : 0);
                 }
@@ -1767,6 +1803,12 @@ class TaskFragment extends WindowContainer<WindowContainer> {
         if (prev == resuming) {
             Slog.wtf(TAG, "Trying to pause activity that is in process of being resumed");
             return false;
+        }
+
+        //Trigger Activity Pause
+        if (mActivityTrigger != null) {
+            mActivityTrigger.activityPauseTrigger(prev.intent, prev.info,
+                                                  prev.info.applicationInfo);
         }
 
         ProtoLog.v(WM_DEBUG_STATES, "Moving to PAUSING: %s", prev);

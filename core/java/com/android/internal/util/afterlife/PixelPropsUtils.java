@@ -43,7 +43,6 @@ public class PixelPropsUtils {
 
     private static final String SPOOF_PIXEL_GMS = "persist.sys.pixelprops.gms";
     private static final String SPOOF_PIXEL_GPHOTOS = "persist.sys.pixelprops.gphotos";
-    private static final String SPOOF_PIXEL_NETFLIX = "persist.sys.pixelprops.netflix";
     private static final String ENABLE_PROP_OPTIONS = "persist.sys.pixelprops.all";
     private static final String ENABLE_GAME_PROP_OPTIONS = "persist.sys.gameprops.enabled";
     private static final String SPOOF_PIXEL_GOOGLE_APPS = "persist.sys.pixelprops.google";
@@ -58,13 +57,13 @@ public class PixelPropsUtils {
     private static final Map<String, String> DEFAULT_VALUES = Map.of(
         "BRAND", "google",
         "MANUFACTURER", "Google",
-        "DEVICE", "akita",
-        "FINGERPRINT", "google/akita_beta/akita:15/AP31.240617.015/12207491:user/release-keys",
-        "MODEL", "Pixel 8a",
-        "PRODUCT", "akita_beta",
-        "DEVICE_INITIAL_SDK_INT", "21",
-        "SECURITY_PATCH", "2024-08-05",
-        "ID", "AP31.240617.015"
+        "DEVICE", "oriole",
+        "FINGERPRINT", "google/oriole_beta/oriole:15/AP41.240823.009/12329489:user/release-keys",
+        "MODEL", "Pixel 6",
+        "PRODUCT", "oriole_beta",
+        "DEVICE_INITIAL_SDK_INT", "31",
+        "SECURITY_PATCH", "2024-09-05",
+        "ID", "AP41.240823.009"
     );
 
     static {
@@ -144,6 +143,10 @@ public class PixelPropsUtils {
                     }
                 }
             }
+        }
+
+        if (packageName.equals("com.snapchat.android")) {
+            propsToChange.putAll(propsToChangePixelXL);
         }
         
         if (packageName.equals("com.google.android.gms")) {

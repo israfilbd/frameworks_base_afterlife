@@ -70,6 +70,7 @@ import android.os.PowerManager;
 import android.os.Trace;
 import android.os.UserManager;
 import android.provider.Settings;
+import android.util.BoostFramework;
 import android.util.IndentingPrintWriter;
 import android.util.Log;
 import android.util.MathUtils;
@@ -294,6 +295,9 @@ public final class NotificationPanelViewController implements ShadeSurface, Dump
 
     private static final Rect M_DUMMY_DIRTY_RECT = new Rect(0, 0, 1, 1);
     private static final Rect EMPTY_RECT = new Rect();
+    private static final String DOUBLE_TAP_SLEEP_LOCKSCREEN =
+            "system:" + Settings.System.DOUBLE_TAP_SLEEP_LOCKSCREEN;
+
     /**
      * Whether the Shade should animate to reflect Back gesture progress.
      * To minimize latency at runtime, we cache this, else we'd be reading it every time
@@ -516,6 +520,7 @@ public final class NotificationPanelViewController implements ShadeSurface, Dump
     private final int mDisplayId;
     private boolean mDoubleTapToSleepEnabled;
     private GestureDetector mDoubleTapGesture;
+    private boolean mIsLockscreenDoubleTapEnabled;
 
     private final KeyguardIndicationController mKeyguardIndicationController;
     private int mHeadsUpInset;
@@ -643,6 +648,11 @@ public final class NotificationPanelViewController implements ShadeSurface, Dump
     private NotificationStackScrollLayout mNotificationStackScroller;
     private boolean mUseIslandNotification;
     private boolean mUseHeadsUp;
+
+    /**
+     * For PanelView fling perflock call
+     */
+    private BoostFramework mPerf = null;
 
     private final Runnable mFlingCollapseRunnable = () -> fling(0, false /* expand */,
             mNextCollapseSpeedUpFactor, false /* expandBecauseOfFalsing */);
@@ -1039,6 +1049,7 @@ public final class NotificationPanelViewController implements ShadeSurface, Dump
                 });
         mAlternateBouncerInteractor = alternateBouncerInteractor;
         dumpManager.registerDumpable(this);
+        mPerf = new BoostFramework();
     }
 
     private void unlockAnimationFinished() {
@@ -2231,6 +2242,10 @@ public final class NotificationPanelViewController implements ShadeSurface, Dump
                 }
             });
         }
+        if (mPerf != null) {
+            String currentPackage = mView.getContext().getPackageName();
+            mPerf.perfHint(BoostFramework.VENDOR_HINT_SCROLL_BOOST, currentPackage, -1, BoostFramework.Scroll.PANEL_VIEW);
+        }
         animator.addListener(new AnimatorListenerAdapter() {
             private boolean mCancelled;
 
@@ -2243,11 +2258,17 @@ public final class NotificationPanelViewController implements ShadeSurface, Dump
 
             @Override
             public void onAnimationCancel(Animator animation) {
+                if (mPerf != null) {
+                    mPerf.perfLockRelease();
+                }
                 mCancelled = true;
             }
 
             @Override
             public void onAnimationEnd(Animator animation) {
+                if (mPerf != null) {
+                    mPerf.perfLockRelease();
+                }
                 if (shouldSpringBack && !mCancelled) {
                     // After the shade is flung open to an overscrolled state, spring back
                     // the shade by reducing section padding to 0.
@@ -4680,6 +4701,7 @@ public final class NotificationPanelViewController implements ShadeSurface, Dump
             mTunerService.addTunable(this, ISLAND_NOTIFICATION);
             mTunerService.addTunable(this, HEADS_UP_NOTIFICATIONS_ENABLED);
             mTunerService.addTunable(this, NOTIFICATION_MATERIAL_DISMISS);
+            mTunerService.addTunable(this, DOUBLE_TAP_SLEEP_LOCKSCREEN);
             // Theme might have changed between inflating this view and attaching it to the
             // window, so
             // force a call to onThemeChanged
@@ -4716,6 +4738,10 @@ public final class NotificationPanelViewController implements ShadeSurface, Dump
                     mShowDimissButton =
                             TunerService.parseIntegerSwitch(newValue, false);
                     updateDismissAllVisibility();
+                    break;
+                case DOUBLE_TAP_SLEEP_LOCKSCREEN:
+                    mIsLockscreenDoubleTapEnabled =
+                            TunerService.parseIntegerSwitch(newValue, true);
                     break;
                 default:
                     break;
@@ -5104,7 +5130,10 @@ public final class NotificationPanelViewController implements ShadeSurface, Dump
                 return false;
             }
 
-            if (mDoubleTapToSleepEnabled && !mPulsing && !mDozing) {
+            if ((mIsLockscreenDoubleTapEnabled && !mPulsing && !mDozing
+                    && mBarState == StatusBarState.KEYGUARD) ||
+                    (!mQsController.getExpanded() && mDoubleTapToSleepEnabled
+                    && event.getY() < mStatusBarHeaderHeightKeyguard)) {
                 mDoubleTapGesture.onTouchEvent(event);
             }
 

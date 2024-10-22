@@ -120,6 +120,7 @@ import android.os.UserHandle;
 import android.os.UserManager;
 import android.service.voice.IVoiceInteractionSession;
 import android.text.TextUtils;
+import android.util.BoostFramework;
 import android.util.Pools.SynchronizedPool;
 import android.util.Slog;
 import android.window.RemoteTransition;
@@ -2731,7 +2732,7 @@ class ActivityStarter {
         // If a target task is specified, try to reuse that one
         if (mOptions != null && mOptions.getLaunchTaskId() != INVALID_TASK_ID) {
             Task launchTask = mRootWindowContainer.anyTaskForId(mOptions.getLaunchTaskId());
-            if (launchTask != null) {
+            if (launchTask != null && launchTask.isLeafTask()) {
                 return launchTask;
             }
             return null;
@@ -2940,7 +2941,7 @@ class ActivityStarter {
 
     /** Places {@link #mStartActivity} in {@code task} or an embedded {@link TaskFragment}. */
     private void addOrReparentStartingActivity(@NonNull Task task, String reason) {
-        mStartActivity.setActivityBoost(true);
+        mStartActivity.acquireActivityBoost();
         TaskFragment newParent = task;
         if (mInTaskFragment != null) {
             int embeddingCheckResult = canEmbedActivity(mInTaskFragment, mStartActivity, task);

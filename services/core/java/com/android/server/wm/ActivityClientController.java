@@ -367,8 +367,9 @@ class ActivityClientController extends IActivityClientController.Stub {
             synchronized (mGlobalLock) {
                 final int taskId = ActivityRecord.getTaskForActivityLocked(token, !nonRoot);
                 final Task task = mService.mRootWindowContainer.anyTaskForId(taskId);
-                if (task != null) {
-                    return ActivityRecord.getRootTask(token).moveTaskToBack(task);
+                final Task rootTask = ActivityRecord.getRootTask(token);
+                if (task != null && rootTask != null) {
+                    return rootTask.moveTaskToBack(task);
                 }
             }
         } finally {
@@ -504,7 +505,7 @@ class ActivityClientController extends IActivityClientController.Stub {
             final long origId = Binder.clearCallingIdentity();
             Trace.traceBegin(TRACE_TAG_WINDOW_MANAGER, "finishActivity");
             try {
-                r.setActivityBoost(false);
+                r.releaseActivityBoost();
                 final boolean res;
                 final boolean finishWithRootActivity =
                         finishTask == Activity.FINISH_TASK_WITH_ROOT_ACTIVITY;

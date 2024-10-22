@@ -35,6 +35,7 @@ import static android.view.WindowManager.LayoutParams.TYPE_INPUT_METHOD;
 import static android.view.WindowManager.TRANSIT_CHANGE;
 import static android.view.WindowManager.TRANSIT_CLOSE;
 import static android.view.WindowManager.TRANSIT_FLAG_IS_RECENTS;
+import static android.view.WindowManager.TRANSIT_FLAG_KEYGUARD_GOING_AWAY;
 import static android.view.WindowManager.TRANSIT_FLAG_KEYGUARD_LOCKED;
 import static android.view.WindowManager.TRANSIT_OPEN;
 import static android.view.WindowManager.TRANSIT_TO_BACK;
@@ -78,18 +79,17 @@ import android.content.pm.ActivityInfo;
 import android.graphics.Point;
 import android.graphics.Rect;
 import android.hardware.HardwareBuffer;
-import android.hardware.power.Boost;
 import android.os.Binder;
 import android.os.Bundle;
 import android.os.IBinder;
 import android.os.IRemoteCallback;
 import android.os.Looper;
-import android.os.PowerManagerInternal;
 import android.os.RemoteException;
 import android.os.SystemClock;
 import android.os.Trace;
 import android.util.ArrayMap;
 import android.util.ArraySet;
+import android.util.BoostFramework;
 import android.util.Slog;
 import android.util.SparseArray;
 import android.view.Display;
@@ -106,7 +106,6 @@ import com.android.internal.protolog.ProtoLogGroup;
 import com.android.internal.protolog.common.ProtoLog;
 import com.android.internal.util.function.pooled.PooledLambda;
 import com.android.server.inputmethod.InputMethodManagerInternal;
-import com.android.server.LocalServices;
 import com.android.server.statusbar.StatusBarManagerInternal;
 
 import java.lang.annotation.Retention;
@@ -180,13 +179,15 @@ class Transition implements BLASTSyncEngine.TransactionReadyListener {
     private final BLASTSyncEngine mSyncEngine;
     private final Token mToken;
 
-    private final PowerManagerInternal mPowerManagerInternal;
-
     private @Nullable ActivityRecord mPipActivity;
 
     /** Only use for clean-up after binder death! */
     private SurfaceControl.Transaction mStartTransaction = null;
     private SurfaceControl.Transaction mFinishTransaction = null;
+
+    /** Perf **/
+    private BoostFramework mPerf = null;
+    private boolean mIsAnimationPerfLockAcquired = false;
 
     /** Used for failsafe clean-up to prevent leaks due to misbehaving player impls. */
     private SurfaceControl.Transaction mCleanupTransaction = null;
@@ -331,7 +332,9 @@ class Transition implements BLASTSyncEngine.TransactionReadyListener {
         mLogger.mCreateWallTimeMs = System.currentTimeMillis();
         mLogger.mCreateTimeNs = SystemClock.elapsedRealtimeNanos();
 
-        mPowerManagerInternal = LocalServices.getService(PowerManagerInternal.class);
+        if (mPerf == null) {
+            mPerf = new BoostFramework();
+        }
     }
 
     @Nullable
@@ -653,9 +656,12 @@ class Transition implements BLASTSyncEngine.TransactionReadyListener {
             return;
         }
         mState = STATE_STARTED;
-        if (mPowerManagerInternal != null && mType == TRANSIT_CHANGE) {
-            mPowerManagerInternal.setPowerBoost(Boost.DISPLAY_UPDATE_IMMINENT, 80);
+
+        if (mPerf != null && mType == TRANSIT_CHANGE) {
+            mPerf.perfHint(BoostFramework.VENDOR_HINT_ROTATION_ANIM_BOOST, null);
+            mIsAnimationPerfLockAcquired = true;
         }
+
         ProtoLog.v(ProtoLogGroup.WM_DEBUG_WINDOW_TRANSITIONS, "Starting Transition %d",
                 mSyncId);
         applyReady();
@@ -1453,6 +1459,10 @@ class Transition implements BLASTSyncEngine.TransactionReadyListener {
         validateKeyguardOcclusion();
 
         mState = STATE_FINISHED;
+        if (mPerf != null && mIsAnimationPerfLockAcquired) {
+            mPerf.perfLockRelease();
+            mIsAnimationPerfLockAcquired = false;
+        }
         // Rotation change may be deferred while there is a display change transition, so check
         // again in case there is a new pending change.
         if (hasParticipatedDisplay && !mController.useShellTransitionsRotation()) {
@@ -1763,6 +1773,26 @@ class Transition implements BLASTSyncEngine.TransactionReadyListener {
             }
         }
 
+        if ((mFlags & TRANSIT_FLAG_KEYGUARD_GOING_AWAY) != 0) {
+            for (int i = mParticipants.size() - 1; i >= 0; --i) {
+                ActivityRecord ar = mParticipants.valueAt(i).asActivityRecord();
+                if (ar != null) {
+                    TaskDisplayArea taskDisplayArea = ar.getTaskDisplayArea();
+                    if (taskDisplayArea == null
+                            || mController.mValidateDisplayVis.contains(taskDisplayArea)) {
+                        continue;
+                    }
+                    for (WindowContainer p = taskDisplayArea; p != null
+                            && !containsChangeFor(p, mTargets);
+                         p = p.getParent()) {
+                        if (p.getSurfaceControl() != null) {
+                            transaction.show(p.getSurfaceControl());
+                        }
+                    }
+                    break;
+                }
+            }
+        }
         // Record windowtokens (activity/wallpaper) that are expected to be visible after the
         // transition animation. This will be used in finishTransition to prevent prematurely
         // committing visibility. Skip transient launches since those are only temporarily visible.
@@ -3658,7 +3688,7 @@ class Transition implements BLASTSyncEngine.TransactionReadyListener {
                             .setSourceCrop(cropBounds)
                             .setCaptureSecureLayers(true)
                             .setAllowProtected(true)
-                            .setHintForSeamlessTransition(isDisplayRotation)
+                            .setHintForSeamlessTransition(true)
                             .build();
             ScreenCapture.ScreenshotHardwareBuffer screenshotBuffer =
                     ScreenCapture.captureLayers(captureArgs);
